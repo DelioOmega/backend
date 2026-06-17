@@ -16,7 +16,7 @@ const ctlGetAllMateriales = async (req, res, next) => {
 
     const result = await getAllMaterialesService({ pagina, limite, nombre, estado, tipoMaterial });
     if (result.err) return next(new AppError(result.err, result.errorCode));
-    res.status(200).json({ status: true, data: result.data, meta: result.meta });
+    res.status(200).json({ status: true, data: result.data, meta: result.meta, resumen: result.resumen });
   } catch (error) {
     next(new AppError('Error interno del servidor', 500));
   }
