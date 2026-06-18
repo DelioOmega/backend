@@ -51,10 +51,13 @@ const ctlGetById = async (req, res, next) => {
 const ctlCreate = async (req, res, next) => {
   try {
     const { provIdFk, detalles } = req.body;
-    const usuIdFk = req.user?.id || null;
+    const usuIdFk = req.user?.user_id || null;
 
     const result = await createAbastecimientoService({ provIdFk, detalles, usuIdFk });
-    if (result.err) return next(new AppError(result.err, result.errorCode));
+    if (result.err) {
+      console.error('[ctlCreate] Error del servicio:', result.err);
+      return next(new AppError(result.err, result.errorCode));
+    }
 
     res.status(201).json({
       status: true,
@@ -62,6 +65,8 @@ const ctlCreate = async (req, res, next) => {
       id: result.id,
     });
   } catch (error) {
+    console.error('[ctlCreate] Error inesperado:', error.sqlMessage || error.message);
+    console.error('[ctlCreate] Stack:', error.stack);
     next(new AppError('Error interno del servidor', 500));
   }
 };

@@ -205,7 +205,9 @@ export const createAbastecimientoService = async ({ provIdFk, detalles, usuIdFk 
     return { msg: 'Abastecimiento creado correctamente', id: absId };
   } catch (error) {
     await connection.rollback();
-    return { err: 'Error al crear abastecimiento', errorCode: 500 };
+    console.error('[createAbastecimientoService] ERROR MySQL:', error.sqlMessage || error.message);
+    console.error('[createAbastecimientoService] STACK:', error.stack);
+    return { err: error.sqlMessage || error.message || 'Error al crear abastecimiento', errorCode: 500 };
   } finally {
     connection.release();
   }
