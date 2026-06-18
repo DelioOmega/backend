@@ -2,13 +2,30 @@ import db from "../config/db.js";
 import { calculateTotalPages } from '../utils/paginacion.js';
 
 // ══════════════════════════════════════════════════════════════
-// NOTA: El trigger `trg_entrada_abastecimiento` (AFTER INSERT
-// ON detalle_abastecimiento) maneja AUTOMÁTICAMENTE:
-//   - Aumento de proStock en productos
-//   - Aumento de matCantDisp en materiales
-//   - Reactivación de materiales AGOTADO → DISPONIBLE
-//   - Registro en movimientos
-//   - Registro en actividad_sistema
+// DIVISIÓN DE RESPONSABILIDADES — LÓGICA EN MySQL vs BACKEND
+// ══════════════════════════════════════════════════════════════
+//
+//  MySQL (trigger + stored procedures):
+//  ─────────────────────────────────────
+//  Al cambiar absEstado a 'COMPLETADO', el trigger
+//  trg_entrada_abastecimiento dispara automáticamente:
+//    sp_registrar_movimientos_abastecimiento
+//    sp_registrar_actividad_abastecimiento
+//  Y además:
+//    - Aumenta proStock en productos
+//    - Aumenta matCantDisp en materiales
+//    - Reactiva materiales AGOTADO → DISPONIBLE
+//    - Registra filas en movimientos
+//    - Registra filas en actividad_sistema
+//
+//  Backend (Node.js):
+//  ─────────────────
+//    - Crear: inserta encabezado + detalles (PENDIENTE).
+//      NO modifica stock.
+//    - Completar: solo cambia absEstado a COMPLETADO.
+//      El trigger hace TODO el resto.
+//    - Cancelar: revierte stock si estaba COMPLETADO,
+//      registra movimientos de reversión y actividad.
 // ══════════════════════════════════════════════════════════════
 
 // ────────────────────────────────────────────────────────────
@@ -121,7 +138,14 @@ export const getAllAbastecimientosService = async ({
 export const getAbastecimientoByIdService = async ({ id }) => {
   try {
     const [absRows] = await db.query(
-      `SELECT a.*, pv.provNom AS proveedor_nombre
+      `SELECT
+         a.id,
+         a.absEstado AS estado,
+         a.abaFec AS fecha,
+         a.abaObs AS observacion,
+         a.provIdFk,
+         a.usuIdFk,
+         pv.provNom AS proveedor_nombre
        FROM abastecimiento a
        LEFT JOIN proveedor pv ON pv.provId = a.provIdFk
        WHERE a.id = ?`,
@@ -160,9 +184,9 @@ export const getAbastecimientoByIdService = async ({ id }) => {
 // ────────────────────────────────────────────────────────────
 // createAbastecimientoService — Crear con transacción
 // ────────────────────────────────────────────────────────────
-// El trigger trg_entrada_abastecimiento (AFTER INSERT) se
-// dispara por cada detalle insertado y actualiza stock,
-// movimientos y actividad automáticamente.
+// Crea el encabezado (estado PENDIENTE por defecto) y los
+// detalles. NO modifica stock — el trigger se encarga de eso
+// cuando el abastecimiento se marque como COMPLETADO.
 export const createAbastecimientoService = async ({ provIdFk, detalles, usuIdFk }) => {
   const connection = await db.getConnection();
   try {
@@ -191,7 +215,7 @@ export const createAbastecimientoService = async ({ provIdFk, detalles, usuIdFk 
     );
     const absId = result.insertId;
 
-    // Insertar cada detalle — el trigger se dispara en cada INSERT
+    // Insertar cada detalle (sin disparar cambios de stock aún)
     for (const det of detalles) {
       await connection.query(
         `INSERT INTO detalle_abastecimiento (absIdFk, detAbsTip, detAbsCant, detAbsCos, detAbsRefId)
@@ -214,24 +238,153 @@ export const createAbastecimientoService = async ({ provIdFk, detalles, usuIdFk 
 };
 
 // ────────────────────────────────────────────────────────────
-// cancelarAbastecimientoService — Marcar como cancelado
+// completarAbastecimientoService — Marcar como COMPLETADO
 // ────────────────────────────────────────────────────────────
-export const cancelarAbastecimientoService = async ({ id }) => {
+// Al cambiar absEstado a 'COMPLETADO', el trigger
+// trg_entrada_abastecimiento y los procedimientos
+// sp_registrar_movimientos_abastecimiento y
+// sp_registrar_actividad_abastecimiento se encargan
+// automáticamente de:
+//   - Aumentar proStock / matCantDisp
+//   - Reactivar materiales AGOTADO → DISPONIBLE
+//   - Registrar movimientos de inventario
+//   - Registrar actividad en actividad_sistema
+//
+// El backend NO modifica stock manualmente aquí.
+export const completarAbastecimientoService = async ({ id }) => {
   try {
-    const [abs] = await db.query('SELECT id FROM abastecimiento WHERE id = ?', [id]);
+    // Validar existencia
+    const [abs] = await db.query(
+      "SELECT id, absEstado FROM abastecimiento WHERE id = ?",
+      [id]
+    );
     if (abs.length === 0) {
       return { err: 'Abastecimiento no encontrado', errorCode: 404 };
     }
 
-    // Si la tabla tiene columna de estado, actualizarla
-    // (ej: abaEst, absEstado)
+    if (abs[0].absEstado === 'COMPLETADO') {
+      return { err: 'El abastecimiento ya está completado', errorCode: 400 };
+    }
+
+    if (abs[0].absEstado === 'CANCELADO') {
+      return { err: 'No se puede completar un abastecimiento cancelado', errorCode: 400 };
+    }
+
+    // Cambiar estado → el trigger dispara el resto
     await db.query(
+      "UPDATE abastecimiento SET absEstado = 'COMPLETADO' WHERE id = ?",
+      [id]
+    );
+
+    return { msg: 'Abastecimiento completado — stock, movimientos y actividad actualizados por el trigger' };
+  } catch (error) {
+    console.error('[completarAbastecimientoService] ERROR:', error.sqlMessage || error.message);
+    return { err: 'Error al completar abastecimiento', errorCode: 500 };
+  }
+};
+
+// ────────────────────────────────────────────────────────────
+// cancelarAbastecimientoService — Marcar como cancelado
+// ────────────────────────────────────────────────────────────
+export const cancelarAbastecimientoService = async ({ id, usuIdFk }) => {
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // Validar existencia y estado
+    const [abs] = await connection.query(
+      'SELECT id, absEstado FROM abastecimiento WHERE id = ?',
+      [id]
+    );
+    if (abs.length === 0) {
+      await connection.rollback();
+      return { err: 'Abastecimiento no encontrado', errorCode: 404 };
+    }
+
+    if (abs[0].absEstado === 'CANCELADO') {
+      await connection.rollback();
+      return { err: 'El abastecimiento ya está cancelado', errorCode: 400 };
+    }
+
+    // ── Si estaba COMPLETADO, revertir stock ──
+    // (el trigger ya incrementó proStock / matCantDisp al completar)
+    if (abs[0].absEstado === 'COMPLETADO') {
+      const [detalles] = await connection.query(
+        'SELECT detAbsTip, detAbsCant, detAbsRefId FROM detalle_abastecimiento WHERE absIdFk = ?',
+        [id]
+      );
+
+      for (const det of detalles) {
+        if (det.detAbsTip === 'PRODUCTO') {
+          await connection.query(
+            'UPDATE productos SET proStock = GREATEST(proStock - ?, 0) WHERE proId = ?',
+            [det.detAbsCant, det.detAbsRefId]
+          );
+        } else if (det.detAbsTip === 'MATERIAL') {
+          await connection.query(
+            'UPDATE materiales SET matCantDisp = GREATEST(matCantDisp - ?, 0) WHERE matId = ?',
+            [det.detAbsCant, det.detAbsRefId]
+          );
+        }
+      }
+
+      // Registrar movimiento de reversión
+      const tipoMov = detalles.some(d => d.detAbsTip === 'PRODUCTO') ? 'SALIDA' : 'SALIDA';
+      for (const det of detalles) {
+        await connection.query(
+          `INSERT INTO movimientos (movTip, movCant, movRefId, movFec, movObs, usuIdFk)
+           VALUES (?, ?, ?, NOW(), ?, ?)`,
+          [
+            tipoMov,
+            det.detAbsCant,
+            det.detAbsRefId,
+            `Reversión por cancelación de abastecimiento #${id}`,
+            usuIdFk || null,
+          ]
+        );
+      }
+
+      // Registrar actividad de cancelación con reversión
+      await connection.query(
+        `INSERT INTO actividad_sistema (modulo, accion, descripcion, referenciaId, usuIdFk, fecha)
+         VALUES (?, ?, ?, ?, ?, NOW())`,
+        [
+          'ABASTECIMIENTO',
+          'CANCELAR',
+          `Abastecimiento #${id} cancelado — stock revertido`,
+          id,
+          usuIdFk || null,
+        ]
+      );
+    } else {
+      // PENDIENTE: solo registrar actividad, sin tocar stock
+      await connection.query(
+        `INSERT INTO actividad_sistema (modulo, accion, descripcion, referenciaId, usuIdFk, fecha)
+         VALUES (?, ?, ?, ?, ?, NOW())`,
+        [
+          'ABASTECIMIENTO',
+          'CANCELAR',
+          `Abastecimiento #${id} cancelado (estaba pendiente)`,
+          id,
+          usuIdFk || null,
+        ]
+      );
+    }
+
+    // Cambiar estado a CANCELADO
+    await connection.query(
       "UPDATE abastecimiento SET absEstado = 'CANCELADO' WHERE id = ?",
       [id]
     );
 
-    return { msg: 'Abastecimiento cancelado' };
+    await connection.commit();
+
+    return { msg: 'Abastecimiento cancelado — stock revertido si estaba completado' };
   } catch (error) {
+    await connection.rollback();
+    console.error('[cancelarAbastecimientoService] ERROR:', error.sqlMessage || error.message);
     return { err: 'Error al cancelar abastecimiento', errorCode: 500 };
+  } finally {
+    connection.release();
   }
 };

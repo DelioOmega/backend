@@ -3,6 +3,7 @@ import {
   getAllAbastecimientosService,
   getAbastecimientoByIdService,
   createAbastecimientoService,
+  completarAbastecimientoService,
   cancelarAbastecimientoService,
 } from '../services/abastecimiento.service.js';
 
@@ -71,11 +72,11 @@ const ctlCreate = async (req, res, next) => {
   }
 };
 
-// ── PATCH /api/abastecimientos/:id/cancelar — Cancelar ──
-const ctlCancelar = async (req, res, next) => {
+// ── PATCH /api/abastecimientos/:id/completar — Completar (dispara trigger) ──
+const ctlCompletar = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const result = await cancelarAbastecimientoService({ id });
+    const result = await completarAbastecimientoService({ id });
     if (result.err) return next(new AppError(result.err, result.errorCode));
 
     res.status(200).json({ status: true, msg: result.msg });
@@ -84,4 +85,18 @@ const ctlCancelar = async (req, res, next) => {
   }
 };
 
-export { ctlGetAll, ctlGetById, ctlCreate, ctlCancelar };
+// ── PATCH /api/abastecimientos/:id/cancelar — Cancelar ──
+const ctlCancelar = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const usuIdFk = req.user?.user_id || null;
+    const result = await cancelarAbastecimientoService({ id, usuIdFk });
+    if (result.err) return next(new AppError(result.err, result.errorCode));
+
+    res.status(200).json({ status: true, msg: result.msg });
+  } catch (error) {
+    next(new AppError('Error interno del servidor', 500));
+  }
+};
+
+export { ctlGetAll, ctlGetById, ctlCreate, ctlCompletar, ctlCancelar };
