@@ -6,7 +6,7 @@ import {
   ctlCompletar,
   ctlCancelar,
 } from '../controllers/abastecimiento.controller.js';
-import { authValidator, isAdmin } from '../middleware/auth.middleware.js';
+import { authValidator } from '../middleware/auth.middleware.js';
 import validateFields from '../middleware/validator.middleware.js';
 import { createAbastecimientoRules } from '../validators/abastecimiento.validator.js';
 
@@ -22,9 +22,9 @@ router.get('/:id', authValidator, ctlGetById);
 router.post('/', authValidator, createAbastecimientoRules, validateFields, ctlCreate);
 
 // PATCH /api/abastecimientos/:id/completar — Completar (el trigger actualiza stock, movimientos y actividad)
-router.patch('/:id/completar', authValidator, isAdmin, ctlCompletar);
+router.patch('/:id/completar', authValidator, ctlCompletar);
 
 // PATCH /api/abastecimientos/:id/cancelar — Cancelar
-router.patch('/:id/cancelar', authValidator, isAdmin, ctlCancelar);
+router.patch('/:id/cancelar', authValidator, ctlCancelar);
 
 export { router };
