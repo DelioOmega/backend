@@ -46,7 +46,7 @@ export const getAllAbastecimientosService = async ({
     }
 
     if (estado) {
-      whereClauses.push('a.abaEst = ?');
+      whereClauses.push('a.absEstado = ?');
       values.push(estado);
     }
 
@@ -58,8 +58,8 @@ export const getAllAbastecimientosService = async ({
     const sqlResumen = `
       SELECT
         COUNT(*) AS total_abastecimientos,
-        COALESCE(SUM(CASE WHEN a.abaEst = 'PENDIENTE'  THEN 1 ELSE 0 END), 0) AS pendientes,
-        COALESCE(SUM(CASE WHEN a.abaEst = 'COMPLETADO' THEN 1 ELSE 0 END), 0) AS completados,
+        COALESCE(SUM(CASE WHEN a.absEstado = 'PENDIENTE'  THEN 1 ELSE 0 END), 0) AS pendientes,
+        COALESCE(SUM(CASE WHEN a.absEstado = 'COMPLETADO' THEN 1 ELSE 0 END), 0) AS completados,
         COALESCE(SUM(d.costo_total), 0) AS costo_total
       FROM abastecimiento a
       LEFT JOIN proveedor pv ON pv.provId = a.provIdFk
@@ -77,7 +77,7 @@ export const getAllAbastecimientosService = async ({
     const sql = `
       SELECT
         a.id,
-        a.abaEst AS estado,
+        a.absEstado AS estado,
         a.abaFec AS fecha,
         a.abaObs AS observacion,
         a.provIdFk,
@@ -110,6 +110,7 @@ export const getAllAbastecimientosService = async ({
       },
     };
   } catch (error) {
+    console.error('Error en getAllAbastecimientosService:', error.sqlMessage || error.message, error.stack);
     return { err: 'Error al listar abastecimientos', errorCode: 500 };
   }
 };
@@ -223,7 +224,7 @@ export const cancelarAbastecimientoService = async ({ id }) => {
     // Si la tabla tiene columna de estado, actualizarla
     // (ej: abaEst, absEstado)
     await db.query(
-      "UPDATE abastecimiento SET abaEst = 'CANCELADO' WHERE id = ?",
+      "UPDATE abastecimiento SET absEstado = 'CANCELADO' WHERE id = ?",
       [id]
     );
 
